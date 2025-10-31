@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# Dati (NON FARE COMMIT ai dati grezzi o grandi)
+data/raw/
+
+venv/
+__pycache__/
+*.pyc
