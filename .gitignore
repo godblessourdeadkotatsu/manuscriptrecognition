@@ -209,6 +209,7 @@ __marimo__/
 
 # Dati (NON FARE COMMIT ai dati grezzi o grandi)
 data/raw/
+data/processed/
 
 venv/
 __pycache__/
