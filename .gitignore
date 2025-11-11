@@ -208,6 +208,7 @@ __marimo__/
 
 
 # Dati (NON FARE COMMIT ai dati grezzi o grandi)
+data
 data/raw/
 data/processed/
 
