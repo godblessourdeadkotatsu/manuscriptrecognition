@@ -8,6 +8,18 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import models
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import argparse
+
+
+# --- DEFINIZIONE DEGLI ARGOMENTI ---
+parser = argparse.ArgumentParser(description="Training resnet18 su grayscale")
+parser.add_argument('--epochs', type=int, default=20, help='Numero di epoche da eseguire')
+
+args = parser.parse_args()
+
+num_epochs = args.epochs
+print(f"Numero di epoche: {num_epochs}")
 
 # Creating a custom dataset class
 class ImageDataset(torch.utils.data.Dataset):
@@ -91,7 +103,7 @@ class SaltAndPepper(object):
 rng = torch.Generator().manual_seed(2025)  # crea un generatore
 
 # Replace the path with the path to your dataset
-data_path = '../data/patches/gsc'
+data_path = 'data/patches/gsc'
 
 my_transform = v2.Compose([
     v2.RandAugment(2,4)
@@ -115,7 +127,7 @@ train_dataset, test_dataset = random_split(dataset, [train_size, val_size], gene
 train_dataloader = torch.utils.data.DataLoader(
     dataset = train_dataset,
 
-    batch_size = 100,
+    batch_size = 200,
 
     shuffle = True,
 
@@ -127,7 +139,7 @@ print('Number of batches:',len(train_dataloader))
 test_dataloader = torch.utils.data.DataLoader(
     dataset = test_dataset,
 
-    batch_size = 1,
+    batch_size = 200,
 
     shuffle = False,
 
@@ -151,18 +163,25 @@ model.fc = nn.Linear(num_ftrs, 3)
 
 model = model.to(device)
 
+if torch.cuda.device_count() > 1:
+    print(f"Using {torch.cuda.device_count()} GPUs!")
+    model = nn.DataParallel(model)
+
 # === TRAINING SETUP ===
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
+# preparo la merda per il grafico
+train_losses = []
+train_accuracies = []
 # === LOOP ===
-num_epochs = 10
 
 for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
+    total_batches = len(train_dataloader)
 
     for images, labels in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
         images, labels = images.to(device), labels.to(device)
@@ -179,6 +198,24 @@ for epoch in range(num_epochs):
         correct += (predicted == labels).sum().item()
 
     train_acc = 100 * correct / total
+    epoch_loss = running_loss / total_batches
+    train_losses.append(epoch_loss)
     print(f"Epoch [{epoch+1}/{num_epochs}]  Loss: {running_loss/len(train_dataloader):.4f}  Acc: {train_acc:.2f}%")
 
 print("Training completed.")
+
+model_path = "pytorch/checkpoints/resnet18_full.pth"
+
+torch.save(model, model_path)
+
+# Salva il grafico
+plt.figure(figsize=(10,6))
+plt.plot(range(1, num_epochs+1), train_losses, marker='o', label='Loss')
+plt.plot(range(1, num_epochs+1), train_accuracies, marker='s', label='Accuracy')
+plt.title("Training Metrics per Epoca")
+plt.xlabel("Epoca")
+plt.ylabel("Value")
+plt.grid(True)
+plt.legend()
+plt.savefig("training_metrics.png")  # <- Salva il PNG
+plt.close()  # chiude la figura per liberare memoria
