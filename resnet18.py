@@ -11,7 +11,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import argparse
 
-
+torch.cuda.empty_cache()
+torch.cuda.ipc_collect()
 # --- DEFINIZIONE DEGLI ARGOMENTI ---
 parser = argparse.ArgumentParser(description="Training resnet18 su grayscale")
 parser.add_argument('--epochs', type=int, default=20, help='Numero di epoche da eseguire')
@@ -106,7 +107,7 @@ rng = torch.Generator().manual_seed(2025)  # crea un generatore
 data_path = 'data/patches/gsc'
 
 my_transform = v2.Compose([
-    v2.RandAugment(2,4)
+    v2.RandAugment(3,9)
 ])
 
 # Creating a dataset object with the path to the dataset
@@ -127,7 +128,7 @@ train_dataset, test_dataset = random_split(dataset, [train_size, val_size], gene
 train_dataloader = torch.utils.data.DataLoader(
     dataset = train_dataset,
 
-    batch_size = 200,
+    batch_size = 32,
 
     shuffle = True,
 
@@ -139,7 +140,7 @@ print('Number of batches:',len(train_dataloader))
 test_dataloader = torch.utils.data.DataLoader(
     dataset = test_dataset,
 
-    batch_size = 200,
+    batch_size = 1,
 
     shuffle = False,
 
@@ -152,7 +153,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
 # === MODEL ===
-model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
 
 # Adattiamo la prima conv per grayscale
 model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -200,11 +201,12 @@ for epoch in range(num_epochs):
     train_acc = 100 * correct / total
     epoch_loss = running_loss / total_batches
     train_losses.append(epoch_loss)
+    train_accuracies.append(train_acc)
     print(f"Epoch [{epoch+1}/{num_epochs}]  Loss: {running_loss/len(train_dataloader):.4f}  Acc: {train_acc:.2f}%")
 
 print("Training completed.")
 
-model_path = "pytorch/checkpoints/resnet18_full.pth"
+model_path = "pytorch/checkpoints/resnet50_full.pth"
 
 torch.save(model, model_path)
 
