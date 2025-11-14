@@ -1,9 +1,17 @@
+'''
+resnet50: funzionerà o NO?
+
+chi lo sa!
+
+this is the dark age of love
+'''
 import os
 import numpy as np
 from PIL import Image
 import torch
+from collections import Counter
 from torchvision.transforms import v2
-from torch.utils.data import random_split
+from torch.utils.data import random_split, WeightedRandomSampler
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import models
@@ -11,9 +19,11 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import argparse
 
+# svuoto la cache della GPU
 torch.cuda.empty_cache()
 torch.cuda.ipc_collect()
-# --- DEFINIZIONE DEGLI ARGOMENTI ---
+
+# sono un ragazzo semplice, voglio solo chiamare le epoche quando lancio il programma perchè ho visto gente farlo da htop
 parser = argparse.ArgumentParser(description="Training resnet18 su grayscale")
 parser.add_argument('--epochs', type=int, default=20, help='Numero di epoche da eseguire')
 
@@ -22,193 +32,197 @@ args = parser.parse_args()
 num_epochs = args.epochs
 print(f"Numero di epoche: {num_epochs}")
 
-# Creating a custom dataset class
+# creo la mia dataset class custom per una maggiore flessibilità :)
 class ImageDataset(torch.utils.data.Dataset):
     
     def __init__(self, dir, transform=None):
+        # nell'init metto il percorso e preparo la lista di percorsi di immagini e la lista di etichette
         self.data_dir = dir
         self.images = []
         self.labels = []
         self.transform = transform
 
-        # classi : mi baso sulle sottocartelle
+        # per le classi mi baso sulle sottocartelle
         self.classes = sorted(os.listdir(dir))  
         self.class_to_idx = {class_name: i for i, class_name in enumerate(self.classes)}
         
+        # ciclo tra le sottocartelle
         for cls_name in self.classes:
             cls_folder = os.path.join(dir, cls_name)
-            for fname in os.listdir(cls_folder):
+            for fname in sorted(os.listdir(cls_folder)):
                 self.images.append(os.path.join(cls_folder, fname))
                 self.labels.append(self.class_to_idx[cls_name])
 
-    # Defining the length of the dataset
+    # la lunghezza di questo ImageDataset sarà ovviamente il numero di immagini
     def __len__(self):
         return len(self.images)
 
-    # Defining the method to get an item from the dataset
+    # quando voglio ottenere l'elemento i dal dataset, apri l'immagine come PIL in grayscale
     def __getitem__(self, index):
-        image_np = np.array(Image.open(self.images[index])) # forza grayscale
-        image = torch.from_numpy(image_np).unsqueeze(0) / 255.0
+        image = Image.open(self.images[index]).convert("L") 
 
-        # Applying the transform
+        # se le ho definite, applica le trasformazioni
         if self.transform:
             image = self.transform(image)
+
+        image = image.repeat(3, 1, 1) #RESNET ASPETTA 3 CANALI  
 
         label = self.labels[index]
         
         return image, label
     
-class SaltAndPepper(object):
 
-    def __init__(self, generator, amount=0.05):
-        self.amount = amount
-        self.generator = generator
+'''
+passiamo ora a caricare le varie immagini.
+quello che farò è usare questa classe ImageDataset per caricare tutta la cartella dentro un ImageDataset e applicare trasformazioni (l'ultima delle quali è la conversione a tensore)
 
-    #definisco la trasformazione
+Poi dividerò questa classe in due sottodataset (train e test) e li caricherò in dei dataloader. 
+Siccome le tre classi hanno diverse numerosità userò un weighted sampler per equilibrarle.
+'''
 
-    def __call__(self, image):
+# come ben insegna il prof. Balbo, settiamo un seme
+rng = torch.Generator().manual_seed(2025) 
 
-        #dimensioni
-        if image.ndim == 3:
-            _, h, w = image.shape
-        else:
-            h, w = image.shape
-
-
-        number_of_pixels = int(h * w * self.amount)
-
-        # Pick a random y coordinate
-        y_coord=torch.randint(0, h, (number_of_pixels,), generator=self.generator)
-        
-        # Pick a random x coordinate
-        x_coord=torch.randint(0, w, (number_of_pixels,), generator=self.generator)
-        
-        # Color that pixel to white
-        image[:, y_coord, x_coord] = 1.0
-            
-        # Randomly pick some pixels in
-        # the image for coloring them black
-        # Pick a random number between 300 and 10000 
-        
-        # Pick a random y coordinate
-        y_coord=torch.randint(0, h, (number_of_pixels,), generator=self.generator)
-        
-        # Pick a random x coordinate
-        x_coord=torch.randint(0, w, (number_of_pixels,), generator=self.generator)
-        
-        # Color that pixel to black
-        image[:, y_coord, x_coord] = 0.0
-
-        return image
-
-rng = torch.Generator().manual_seed(2025)  # crea un generatore
-
-# Replace the path with the path to your dataset
+# i nostri dati 
 data_path = 'data/patches/gsc'
 
-my_transform = v2.Compose([
-    v2.RandAugment(3,9)
+# le nostre trasformazioni preferite
+transform_bundle = v2.Compose([
+        v2.Resize((224,224)),
+        v2.RandomAffine(0, shear=10, scale=(0.8,1.2)),
+        v2.RandomHorizontalFlip(),
+        v2.ToImage(), 
+        v2.ToDtype(torch.float32, scale=True)
 ])
 
-# Creating a dataset object with the path to the dataset
-dataset = ImageDataset(data_path, transform=my_transform)
-
-# Getting the length of the dataset
-dataset_length = len(dataset)
-
-# Printing the length of the dataset
-print('Number of training examples:',dataset_length)
-
-dataset = ImageDataset(data_path, transform=my_transform)
+# carico dati e mi salvo la lunghezza e le etichette
+dataset = ImageDataset(data_path, transform=transform_bundle)
 dataset_size = len(dataset)
+labels = dataset.labels
+
+# ora lo divido on the fly in training (80%) e test (20%)
 train_size = int(0.8 * dataset_size)
-val_size = dataset_size - train_size
-train_dataset, test_dataset = random_split(dataset, [train_size, val_size], generator=rng)
+test_size = dataset_size - train_size
+train_dataset, test_dataset = random_split(dataset, [train_size, test_size], generator=rng)
 
-train_dataloader = torch.utils.data.DataLoader(
-    dataset = train_dataset,
+# --- TRAIN SUBSET ---
+train_labels_subset = [dataset.labels[i] for i in train_dataset.indices]
 
-    batch_size = 32,
+# conto quanti esempi per classe nel subset
+train_counts_subset = Counter(train_labels_subset)
 
-    shuffle = True,
+# calcolo i pesi inversi per classe
+train_weights_per_class = {cls: 1.0 / count for cls, count in train_counts_subset.items()}
 
-    num_workers= 2 
+# assegno a ogni esempio il suo peso
+train_sample_weights = [train_weights_per_class[label] for label in train_labels_subset]
+
+# creo il WeightedRandomSampler
+train_sampler = WeightedRandomSampler(
+    weights=train_sample_weights,
+    num_samples=len(train_sample_weights),
+    replacement=True
 )
 
-print('Number of batches:',len(train_dataloader))
+# normalmente non serve sampler pesato per il test, basta shuffle=False
+test_sampler = None
 
-test_dataloader = torch.utils.data.DataLoader(
-    dataset = test_dataset,
+# carico tutto nel dataloader
+dataloaders = {
+    'train': torch.utils.data.DataLoader(
+        dataset=train_dataset,
+        batch_size=600,
+        sampler=train_sampler,
+        num_workers=16
+    ),
+    'test': torch.utils.data.DataLoader(
+        dataset=test_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=16
+    )
+}
 
-    batch_size = 1,
-
-    shuffle = False,
-
-    num_workers= 2 
-)
-
-print('Number of batches:',len(test_dataloader))
-
+# mi assicuro di star usando la GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using device:", device)
+print(f'usiamo il dispositivo {device}')
 
-# === MODEL ===
-model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+# carico il modello e lo inizializzo
+model = models.resnet50(weights="ResNet50_Weights.DEFAULT").to(device)
 
-# Adattiamo la prima conv per grayscale
-model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-
-# Adattiamo il classificatore finale per 3 classi
-num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, 3)
-
-model = model.to(device)
-
-if torch.cuda.device_count() > 1:
-    print(f"Using {torch.cuda.device_count()} GPUs!")
-    model = nn.DataParallel(model)
-
-# === TRAINING SETUP ===
+for param in model.parameters():
+    param.requires_grad = False   
+    
+model.fc = nn.Sequential(
+               nn.Linear(2048, 128),
+               nn.ReLU(inplace=True),
+               nn.Linear(128, 3)).to(device) # perchè ho 3 classi
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
+optimizer = optim.Adam(model.fc.parameters())
 
-# preparo la merda per il grafico
-train_losses = []
-train_accuracies = []
-# === LOOP ===
+# definisco la funzione di training
+def train_model(model, criterion, optimizer, dataloaders, num_epochs = 3):
 
-for epoch in range(num_epochs):
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-    total_batches = len(train_dataloader)
+    epoch_losses = []
+    epoch_accuracies = []
 
-    for images, labels in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
-        images, labels = images.to(device), labels.to(device)
+    for epoch in range(num_epochs):
+        print(f'Epoch {epoch+1}/{num_epochs}')
+        print('-HL3soon-' * 10)
 
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+        for phase in ['train','test']:
+            if phase == 'train':
+                model.train()
+            else:
+                model.eval()
 
-        running_loss += loss.item()
-        _, predicted = torch.max(outputs, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+            running_loss = 0.0
+            running_corrects = 0
 
-    train_acc = 100 * correct / total
-    epoch_loss = running_loss / total_batches
-    train_losses.append(epoch_loss)
-    train_accuracies.append(train_acc)
-    print(f"Epoch [{epoch+1}/{num_epochs}]  Loss: {running_loss/len(train_dataloader):.4f}  Acc: {train_acc:.2f}%")
+            for inputs, labels in tqdm(
+                dataloaders[phase], 
+                desc=f'fase di {phase}, epoca {epoch+1}',
+                leave = False
+                ):
+                # porto etichette e tensori sulla GPU
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                
+                # faccio il feedforward della rete con gli input e ottengo il vettore (tensore) con 3 probabilità assegnate alle 3 classi
+                outputs = model(inputs)
 
-print("Training completed.")
+                # calcolo la loss media per batch
+                loss = criterion(outputs, labels)
 
-model_path = "pytorch/checkpoints/resnet50_full.pth"
+                if phase == 'train':
+                    optimizer.zero_grad() # calcolo gradiente
+                    loss.backward() # backpropagation
+                    optimizer.step() # step dell'ottimizzatore
 
-torch.save(model, model_path)
+                _, preds =torch.max(outputs, 1) # trova il valore massimo tra le classi
+
+                # accumulo loss media x dimensione totale della batch per OGNI batch
+                running_loss += loss.item() * inputs.size(0) 
+                # faccio lo stesso accumulando quante volte ho azzeccato la previsione
+                running_corrects += torch.sum(preds == labels)
+
+            # stessa cosa ma con le epoche (salvo le loss e le accuracies per un grafico)
+            epoch_loss = running_loss / len(dataloaders[phase].dataset)
+
+            epoch_acc = running_corrects.double() / len(dataloaders[phase].dataset)
+
+            if phase == 'train':
+                train_losses.append(epoch_loss)
+                train_accuracies.append(epoch_acc)
+
+            print(f'in epoch {epoch} we have {phase} loss: {epoch_loss:.4f}, accuracy: {epoch_acc:.4f}')
+    
+    return model, epoch_losses, epoch_accuracies
+
+model_trained, train_losses, train_accuracies = train_model(model, criterion, optimizer, dataloaders, num_epochs)
+
+# salvo lo stato del modello
+torch.save(model_trained.state_dict(), 'pytorch/resnet50weights.pth')
 
 # Salva il grafico
 plt.figure(figsize=(10,6))
